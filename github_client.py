@@ -3,6 +3,8 @@ Enhanced async GitHub API client with parallel processing, caching, and NLP feat
 """
 
 import asyncio
+import enum
+from turtle import pu
 import aiohttp
 import time
 import logging
@@ -12,6 +14,7 @@ from datetime import datetime, timedelta
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from aiolimiter import AsyncLimiter
 from asyncio_throttle import Throttler
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 import json
@@ -79,6 +82,7 @@ class Repository:
     is_archived: bool
     created_at: str
     updated_at: str
+    pulls_url: str
 
 @dataclass
 class Commit:
@@ -87,9 +91,6 @@ class Commit:
     message: str
     author: str
     date: str
-    additions: int
-    deletions: int
-    changed_files: int
 
 @dataclass
 class Comment:
@@ -112,12 +113,11 @@ class EnhancedGitHubAPIClient:
     """Enhanced GitHub API client with async support, caching, and NLP features"""
     
     def __init__(self, token: str, base_url: str = "https://api.github.com",
-                 max_concurrent_requests: int = 10, enable_request_logging: bool = False,
+                 enable_request_logging: bool = False,
                  cache_type: str = "memory", cache_ttl: int = 3600, 
                  enable_nlp: bool = True):
         self.token = token or os.getenv("GITHUB_TOKEN")
         self.base_url = base_url
-        self.max_concurrent_requests = max_concurrent_requests
         self.logger = logging.getLogger(__name__)
         self.enable_request_logging = enable_request_logging
         
@@ -125,16 +125,13 @@ class EnhancedGitHubAPIClient:
             raise ValueError("GitHub token is required. Set GITHUB_TOKEN environment variable or pass token parameter.")
         
         # Setup throttler for rate limiting
-        self.throttler = Throttler(rate_limit=5000, period=3600)  # 5000 requests per hour
+        self.throttler = AsyncLimiter(3750, time_period=3600) 
         
         # Initialize advanced caching
         self.cache = AdvancedCache(cache_type=cache_type, ttl=cache_ttl)
         
         # Initialize NLP detector
         self.nlp_detector = NLPChangeTypeDetector() if enable_nlp else None
-        
-        # Connection pool for better performance
-        self.connector_limit = max_concurrent_requests * 2
         
         # Performance tracking
         self.performance_stats = {
@@ -213,25 +210,25 @@ class EnhancedGitHubAPIClient:
                 
                 headers = {
                     "Authorization": f"token {self.token}",
-                    "Accept": "application/vnd.github.v3+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                    "Accept": "application/vnd.github+json",
                     "User-Agent": "Enhanced-PR-Data-Extractor"
                 }
                 
-                async with session.get(url, params=params, headers=headers, 
-                                     timeout=aiohttp.ClientTimeout(total=30)) as response:
+                response = await session.get(url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=30))
                     
                     # Handle rate limiting
-                    if response.status == 403:
-                        rate_limit_remaining = response.headers.get('X-RateLimit-Remaining', '0')
-                        if rate_limit_remaining == '0':
-                            reset_time = int(response.headers.get('X-RateLimit-Reset', 0))
-                            wait_time = max(reset_time - int(time.time()), 60)
-                            self.logger.warning(f"Rate limit exceeded. Waiting {wait_time} seconds...")
-                            await asyncio.sleep(wait_time)
-                            return await _request()
+                if response.status == 403:
+                    rate_limit_remaining = response.headers.get('X-RateLimit-Remaining', '0')
+                    if rate_limit_remaining == '0':
+                        reset_time = int(response.headers.get('X-RateLimit-Reset', 0))
+                        wait_time = max(reset_time - int(time.time()), 60)
+                        self.logger.warning(f"Rate limit exceeded. Waiting {wait_time} seconds...")
+                        await asyncio.sleep(wait_time)
+                        return await _request()
                     
-                    response.raise_for_status()
-                    return response
+                response.raise_for_status()
+                return response
         
         return await _request()
     
@@ -248,40 +245,41 @@ class EnhancedGitHubAPIClient:
         
         async with aiohttp.ClientSession() as session:
             repositories = []
-            page = 1
+            page: int = 1
             
             while len(repositories) < top_n and page <= max_pages:
-                url = f"{self.base_url}/orgs/{org}/repos"
+                url = f"{self.base_url}/search/repositories"
                 params = {
-                    "type": "public",
+                    "q": f"org:{org}",
                     "sort": sort_by,
-                    "direction": order,
-                    "per_page": 100,
-                    "page": page
+                    "order": order,
+                    "per_page": max_pages,
+                    "page": page,
+                    "visibility": "public",
+                    "archive": "false" if exclude_archived else "true",
+                    "fork": "false" if exclude_forks else "true"
                 }
                 
                 try:
                     response = await self._make_async_request(session, url, params)
                     repos_data = await response.json()
                     
+                    # response.close()
+                    
                     if not repos_data:
                         break
                     
                     # Process repositories in parallel
                     tasks = []
-                    for repo in repos_data:
+                    for repo in repos_data['items']:
                         if len(repositories) >= top_n:
                             break
                         
                         # Apply basic filters
-                        if repo["stargazers_count"] < min_stars:
-                            continue
-                        if exclude_forks and repo["fork"]:
-                            continue
-                        if exclude_archived and repo["archived"]:
-                            continue
-                        if repo["size"] < min_size_kb or repo["size"] > max_size_kb:
-                            continue
+                        # if repo["stargazers_count"] < min_stars:
+                        #     continue
+                        # if repo["size"] < min_size_kb or repo["size"] > max_size_kb:
+                        #     continue
                         
                         tasks.append(self._process_repository_async(session, repo))
                     
@@ -323,7 +321,9 @@ class EnhancedGitHubAPIClient:
                 is_fork=repo_data["fork"],
                 is_archived=repo_data["archived"],
                 created_at=repo_data["created_at"],
-                updated_at=repo_data["updated_at"]
+                updated_at=repo_data["updated_at"],
+                pulls_url=repo_data.get("pulls_url", "").replace("{/number}", "")
+                
             )
         except Exception as e:
             self.logger.warning(f"Failed to process repository {repo_data.get('name', 'unknown')}: {e}")
@@ -347,6 +347,7 @@ class EnhancedGitHubAPIClient:
         try:
             response = await self._make_async_request(session, languages_url)
             languages_data = await response.json()
+            # response.close()
             languages = list(languages_data.keys())
             
             # Cache the result
@@ -358,7 +359,7 @@ class EnhancedGitHubAPIClient:
             return []
     
     async def get_pull_requests_async(self, session: aiohttp.ClientSession,
-                                    repo_full_name: str, max_prs: int = 50,
+                                    url: str, repo_full_name: str, max_prs: int = 50,
                                     state: str = "closed", sort_by: str = "updated",
                                     order: str = "desc", max_pages: int = 50) -> List[Dict]:
         """Get pull requests with full pagination (async)"""
@@ -368,19 +369,19 @@ class EnhancedGitHubAPIClient:
         pull_requests = []
         page = 1
         
-        while len(pull_requests) < max_prs and page <= max_pages:
-            url = f"{self.base_url}/repos/{repo_full_name}/pulls"
+        while len(pull_requests) < max_prs:
             params = {
                 "state": state,
                 "sort": sort_by,
                 "direction": order,
-                "per_page": min(100, max_prs - len(pull_requests)),
+                "per_page": min(100, max_prs - len(pull_requests)), # max page limit is 100
                 "page": page
             }
             
             try:
                 response = await self._make_async_request(session, url, params)
                 prs_data = await response.json()
+                # response.close()
                 
                 if not prs_data:
                     break
@@ -400,24 +401,22 @@ class EnhancedGitHubAPIClient:
     
     async def get_pull_request_commits_async(self, session: aiohttp.ClientSession,
                                            repo_full_name: str, pr_number: int,
-                                           max_commits: int = 10) -> List[Commit]:
+                                           max_commits: int = 10, page: int = 1) -> List[Commit]:
         """Get commits for a pull request with enhanced data (async)"""
         url = f"{self.base_url}/repos/{repo_full_name}/pulls/{pr_number}/commits"
+        params = {"per_page": min(100, max_commits), "page": page}
         
         try:
-            response = await self._make_async_request(session, url)
+            response = await self._make_async_request(session, url, params)
             commits_data = await response.json()
             
             commits = []
-            for commit_data in commits_data[:max_commits]:
+            for commit_data in commits_data:
                 commit = Commit(
                     sha=commit_data["sha"],
                     message=commit_data["commit"]["message"],
                     author=commit_data["commit"]["author"]["name"],
                     date=commit_data["commit"]["author"]["date"],
-                    additions=commit_data["stats"].get("additions", 0),
-                    deletions=commit_data["stats"].get("deletions", 0),
-                    changed_files=len(commit_data.get("files", []))
                 )
                 commits.append(commit)
             
@@ -456,14 +455,14 @@ class EnhancedGitHubAPIClient:
     
     async def _get_issue_comments_async(self, session: aiohttp.ClientSession,
                                       repo_full_name: str, pr_number: int,
-                                      max_comments: int, max_pages: int) -> List[Comment]:
+                                      max_comments: int, max_pages: int = 1, page: int = 1) -> List[Comment]:
         """Get issue comments with pagination"""
         comments = []
-        page = 1
+        current_page = page
         
-        while len(comments) < max_comments and page <= max_pages:
+        while len(comments) < max_comments and (current_page - page + 1) <= max_pages:
             url = f"{self.base_url}/repos/{repo_full_name}/issues/{pr_number}/comments"
-            params = {"per_page": min(100, max_comments - len(comments)), "page": page}
+            params = {"per_page": min(100, max_comments - len(comments)), "page": current_page}
             
             response = await self._make_async_request(session, url, params)
             comments_data = await response.json()
@@ -477,27 +476,28 @@ class EnhancedGitHubAPIClient:
                     body=comment_data["body"],
                     author=comment_data["user"]["login"],
                     date=comment_data["created_at"],
-                    comment_type="issue"
+                    comment_type="issue",
+                    position=None
                 )
                 comments.append(comment)
             
             if len(comments_data) < params["per_page"]:
                 break
             
-            page += 1
+            current_page += 1
         
         return comments
     
     async def _get_review_comments_async(self, session: aiohttp.ClientSession,
                                        repo_full_name: str, pr_number: int,
-                                       max_comments: int, max_pages: int) -> List[Comment]:
+                                       max_comments: int, max_pages: int = 1, page: int = 1) -> List[Comment]:
         """Get review comments with pagination"""
         comments = []
-        page = 1
+        current_page = page
         
-        while len(comments) < max_comments and page <= max_pages:
+        while len(comments) < max_comments and (current_page - page + 1) <= max_pages:
             url = f"{self.base_url}/repos/{repo_full_name}/pulls/{pr_number}/comments"
-            params = {"per_page": min(100, max_comments - len(comments)), "page": page}
+            params = {"per_page": min(100, max_comments - len(comments)), "page": current_page}
             
             response = await self._make_async_request(session, url, params)
             comments_data = await response.json()
@@ -509,7 +509,7 @@ class EnhancedGitHubAPIClient:
                 comment = Comment(
                     id=str(comment_data["id"]),
                     body=comment_data["body"],
-                    author=comment_data["user"]["login"],
+                    author=comment_data["user"]["login"] if comment_data["user"] else "",
                     date=comment_data["created_at"],
                     comment_type="review",
                     position=comment_data.get("position")
@@ -519,7 +519,7 @@ class EnhancedGitHubAPIClient:
             if len(comments_data) < params["per_page"]:
                 break
             
-            page += 1
+            current_page += 1
         
         return comments
     
@@ -657,15 +657,6 @@ class EnhancedGitHubAPIClient:
         if pr_data.get("mergeable_state") == "dirty":
             tags.append("merge-conflict")
         
-        # Add size-based tags
-        additions = pr_data.get("additions", 0)
-        deletions = pr_data.get("deletions", 0)
-        total_changes = additions + deletions
-        
-        if total_changes > 1000:
-            tags.append("large-change")
-        elif total_changes < 10:
-            tags.append("small-change")
         
         return list(set(tags))  # Remove duplicates
 
@@ -916,187 +907,6 @@ class NLPChangeTypeDetector:
             self.logger.warning(f"Commit sentiment analysis failed: {e}")
             return {}
     
-    # OPTIMIZED BULK OPERATIONS USING asyncio.gather
-    
-    async def get_multiple_repositories_optimized(self, session: aiohttp.ClientSession,
-                                                 repo_urls: List[str]) -> List[Repository]:
-        """Get multiple repositories in parallel using asyncio.gather"""
-        self.logger.info(f"Fetching {len(repo_urls)} repositories in parallel")
-        
-        # Create tasks for all repositories
-        tasks = [self._fetch_single_repository(session, url) for url in repo_urls]
-        
-        # Execute all tasks concurrently
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Process results
-        repositories = []
-        for i, result in enumerate(results):
-            if isinstance(result, Exception):
-                self.logger.warning(f"Failed to fetch repository {repo_urls[i]}: {result}")
-            elif result:
-                repositories.append(result)
-        
-        self.performance_stats["batch_operations"] += 1
-        return repositories
-    
-    async def _fetch_single_repository(self, session: aiohttp.ClientSession, 
-                                     repo_url: str) -> Optional[Repository]:
-        """Fetch a single repository with error handling"""
-        try:
-            response = await self._make_async_request(session, repo_url)
-            repo_data = await response.json()
-            
-            # Get languages in parallel if needed
-            languages = await self._get_repository_languages_async(
-                session, repo_data["languages_url"], repo_data["full_name"]
-            )
-            
-            return Repository(
-                name=repo_data["name"],
-                full_name=repo_data["full_name"],
-                url=repo_data["html_url"],
-                languages=languages,
-                stars=repo_data["stargazers_count"],
-                forks=repo_data["forks_count"],
-                description=repo_data["description"] or "",
-                size_kb=repo_data["size"],
-                is_fork=repo_data["fork"],
-                is_archived=repo_data["archived"],
-                created_at=repo_data["created_at"],
-                updated_at=repo_data["updated_at"]
-            )
-        except Exception as e:
-            self.logger.warning(f"Failed to fetch repository {repo_url}: {e}")
-            return None
-    
-    async def get_bulk_pr_data_optimized(self, session: aiohttp.ClientSession,
-                                       repo_full_name: str, pr_numbers: List[int],
-                                       max_concurrent: int = None) -> List[Dict]:
-        """Get multiple PR data in parallel using asyncio.gather with concurrency control"""
-        
-        if not pr_numbers:
-            return []
-        
-        max_concurrent = max_concurrent or min(len(pr_numbers), self.max_concurrent_requests)
-        self.logger.info(f"Fetching {len(pr_numbers)} PRs with {max_concurrent} concurrent requests")
-        
-        # Create semaphore for concurrency control
-        semaphore = asyncio.Semaphore(max_concurrent)
-        
-        async def fetch_pr_with_semaphore(pr_number):
-            async with semaphore:
-                return await self._fetch_single_pr_comprehensive(session, repo_full_name, pr_number)
-        
-        # Create all tasks
-        tasks = [fetch_pr_with_semaphore(pr_num) for pr_num in pr_numbers]
-        
-        # Execute with progress tracking
-        results = []
-        batch_size = max_concurrent
-        
-        for i in range(0, len(tasks), batch_size):
-            batch_tasks = tasks[i:i + batch_size]
-            batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
-            
-            for j, result in enumerate(batch_results):
-                if isinstance(result, Exception):
-                    pr_number = pr_numbers[i + j]
-                    self.logger.warning(f"Failed to fetch PR {pr_number}: {result}")
-                elif result:
-                    results.append(result)
-            
-            # Small delay between batches to be respectful to API
-            if i + batch_size < len(tasks):
-                await asyncio.sleep(0.1)
-        
-        self.performance_stats["batch_operations"] += 1
-        return results
-    
-    async def _fetch_single_pr_comprehensive(self, session: aiohttp.ClientSession,
-                                           repo_full_name: str, pr_number: int) -> Optional[Dict]:
-        """Fetch comprehensive PR data including commits and comments"""
-        
-        # Check cache first
-        cache_key = self.cache.cache_key_for_pr_data(repo_full_name, pr_number)
-        cached_data = self.cache.get(cache_key)
-        
-        if cached_data is not None:
-            self.performance_stats["cache_hits"] += 1
-            return cached_data
-        
-        self.performance_stats["cache_misses"] += 1
-        
-        try:
-            # Create all tasks for parallel execution
-            pr_url = f"{self.base_url}/repos/{repo_full_name}/pulls/{pr_number}"
-            commits_url = f"{self.base_url}/repos/{repo_full_name}/pulls/{pr_number}/commits"
-            comments_url = f"{self.base_url}/repos/{repo_full_name}/issues/{pr_number}/comments"
-            review_comments_url = f"{self.base_url}/repos/{repo_full_name}/pulls/{pr_number}/comments"
-            
-            # Execute all requests in parallel using asyncio.gather
-            pr_task = self._make_async_request(session, pr_url)
-            commits_task = self._make_async_request(session, commits_url)
-            comments_task = self._make_async_request(session, comments_url)
-            review_comments_task = self._make_async_request(session, review_comments_url)
-            
-            # Wait for all requests to complete
-            pr_response, commits_response, comments_response, review_comments_response = await asyncio.gather(
-                pr_task, commits_task, comments_task, review_comments_task,
-                return_exceptions=True
-            )
-            
-            # Process responses
-            pr_data = await pr_response.json() if not isinstance(pr_response, Exception) else {}
-            commits_data = await commits_response.json() if not isinstance(commits_response, Exception) else []
-            comments_data = await comments_response.json() if not isinstance(comments_response, Exception) else []
-            review_comments_data = await review_comments_response.json() if not isinstance(review_comments_response, Exception) else []
-            
-            # Combine all data
-            comprehensive_data = {
-                "pr_data": pr_data,
-                "commits": commits_data[:10],  # Limit commits
-                "comments": comments_data[:20],  # Limit comments
-                "review_comments": review_comments_data[:20]  # Limit review comments
-            }
-            
-            # Cache the result
-            self.cache.set(cache_key, comprehensive_data)
-            
-            return comprehensive_data
-            
-        except Exception as e:
-            self.logger.warning(f"Failed to fetch comprehensive PR data for {pr_number}: {e}")
-            return None
-    
-    async def create_optimized_session(self) -> aiohttp.ClientSession:
-        """Create an optimized aiohttp session with connection pooling"""
-        connector = aiohttp.TCPConnector(
-            limit=self.connector_limit,
-            limit_per_host=min(30, self.connector_limit),
-            ttl_dns_cache=300,
-            use_dns_cache=True,
-            keepalive_timeout=30,
-            enable_cleanup_closed=True
-        )
-        
-        timeout = aiohttp.ClientTimeout(total=60, connect=10)
-        
-        return aiohttp.ClientSession(
-            connector=connector,
-            timeout=timeout,
-            headers={
-                "Authorization": f"token {self.token}",
-                "Accept": "application/vnd.github.v3+json",
-                "User-Agent": "Enhanced-PR-Data-Extractor"
-            }
-        )
-    
-    async def close_session(self, session: aiohttp.ClientSession):
-        """Close aiohttp session properly"""
-        if session and not session.closed:
-            await session.close()
-    
     async def get_performance_stats(self) -> Dict[str, Any]:
         """Get comprehensive performance statistics"""
         cache_size = len(self.cache.cache) if hasattr(self.cache, 'cache') else 0
@@ -1123,22 +933,3 @@ class NLPChangeTypeDetector:
             "batch_operations": 0,
             "parallel_requests": 0
         }
-    
-    async def health_check(self) -> Dict[str, Any]:
-        """Perform a health check of the GitHub API connection"""
-        try:
-            async with await self.create_optimized_session() as session:
-                response = await self._make_async_request(session, f"{self.base_url}/rate_limit")
-                rate_limit_data = await response.json()
-                
-                return {
-                    "status": "healthy",
-                    "rate_limit": rate_limit_data,
-                    "cache_enabled": self.cache is not None,
-                    "nlp_enabled": self.nlp_detector.is_initialized if self.nlp_detector else False
-                }
-        except Exception as e:
-            return {
-                "status": "unhealthy",
-                "error": str(e)
-            }

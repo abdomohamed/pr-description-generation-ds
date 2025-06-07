@@ -11,6 +11,8 @@ This script extracts pull request data from GitHub repositories, specifically de
 - ✅ Multiple output formats (JSON, CSV)
 - ✅ Filtering by programming languages
 - ✅ Customizable extraction parameters
+- ✅ Batch processing with incremental saving
+- ✅ Idempotent extraction (skips previously processed PRs)
 
 ## Setup
 
@@ -134,6 +136,27 @@ The script generates data in the following structure:
 - `INCLUDE_COMMITS`: Whether to include commit information
 - `MAX_COMMENTS_PER_PR`: Maximum comments to extract per PR
 - `MAX_COMMITS_PER_PR`: Maximum commits to extract per PR
+- `BATCH_SIZE`: Number of PRs to process in each batch (also used for incremental saving)
+- `ENABLE_IDEMPOTENT_EXTRACTION`: Skip PRs that have already been processed in previous runs
+
+### Idempotent Extraction
+
+The script supports idempotent operation, meaning it can be safely restarted without re-processing PRs that have already been extracted. This is useful for:
+
+- Resuming long extraction jobs that were interrupted
+- Incrementally adding more data to an existing dataset
+- Updating an existing dataset with only new PRs
+
+To enable idempotent extraction, set `ENABLE_IDEMPOTENT_EXTRACTION = True` in `config.py`. When enabled, the script will:
+
+1. Scan the output directory for existing PR data files
+2. Build a cache of already processed PR IDs
+3. Skip those PRs in subsequent runs
+
+You can test the idempotent extraction feature with:
+```bash
+python test_idempotent.py
+```
 
 ### Rate Limiting
 - `REQUESTS_PER_MINUTE`: GitHub API rate limit
@@ -198,3 +221,5 @@ python extract_pr_data.py
 - Use `EXCLUDE_LANGUAGES` to filter out unwanted repositories
 - Set `INCLUDE_PR_COMMENTS=False` if comments aren't needed
 - Increase `DELAY_BETWEEN_REQUESTS` if experiencing rate limits
+- Enable `ENABLE_IDEMPOTENT_EXTRACTION` to skip already processed PRs when resuming interrupted extractions
+- Use an appropriate `BATCH_SIZE` to balance memory usage and saving frequency
