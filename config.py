@@ -3,8 +3,8 @@ Configuration file for GitHub PR data extraction
 """
 
 # GitHub API Configuration
-GITHUB_TOKEN = "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"  # Set your GitHub token here or use environment variable
-#GITHUB_TOKEN= "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"
+GITHUB_TOKEN = ""  # Set your GitHub token here or use environment variable
+#GITHUB_TOKEN= ""
 GITHUB_API_BASE_URL = "https://api.github.com"
 ORGANIZATION = "microsoft"  # Target organization
 
