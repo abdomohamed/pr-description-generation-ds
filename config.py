@@ -23,14 +23,18 @@ PR_ORDER = "desc"  # Options: asc, desc
 # Data Extraction Configuration
 INCLUDE_PR_COMMENTS = True
 INCLUDE_COMMITS = True
+INCLUDE_PR_FILE_DIFFS = True  # Enable extraction of PR file diffs
 MAX_COMMENTS_PER_PR = 100
 MAX_COMMITS_PER_PR = 100
+MAX_FILES_PER_PR = 100  # Maximum number of files to extract per PR
+MAX_PATCH_SIZE = 10000  # Maximum patch size in characters to store
 
 # Output Configuration
 OUTPUT_FORMAT = "json"  # Options: json, csv
 OUTPUT_DIRECTORY = "./output"
 BATCH_SIZE = 300  # Number of PRs to process in each batch (also used for incremental saving)
 ENABLE_IDEMPOTENT_EXTRACTION = True  # Skip PRs that have already been processed in previous runs
+COMPONENT_LEVEL_IDEMPOTENCY = True  # Track which components (commits, comments, files) have been processed
 
 # Rate Limiting Configuration
 REQUESTS_PER_MINUTE = 5000  # GitHub API rate limit
@@ -69,7 +73,7 @@ MIN_REPOSITORY_SIZE_KB = 10  # Minimum repository size in KB
 MAX_REPOSITORY_SIZE_KB = 1000000  # Maximum repository size in KB (1GB)
 EXCLUDE_FORKS = True  # Exclude forked repositories
 EXCLUDE_ARCHIVED = True  # Exclude archived repositories
-INCLUDE_REPOSITORIES = ["vscode", "Typescript", "terminal", "PowerToys", "Web-Dev-For-Beginners"]  # List of specific repositories to include after fetching the top X repositories (This will help )
+INCLUDE_REPOSITORIES = ["Web-Dev-For-Beginners"]  # List of specific repositories to include after fetching the top X repositories (This will help )
 
 # Retry Configuration
 MAX_RETRIES = 3  # Maximum retries for failed requests
