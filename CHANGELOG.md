@@ -1,5 +1,21 @@
 # GitHub PR Data Extraction System - Changelog
 
+## ✅ Completed Enhancements (June 16, 2025)
+
+### � Component-Level Idempotency
+- **Granular Tracking**: Track which components (commits, comments, file diffs) have been downloaded for each PR
+- **Selective Updates**: Only download missing components rather than re-downloading entire PRs
+- **Memory Caching**: Cache PR data in memory to avoid repeated disk reads
+- **Smart Filtering**: Intelligently filter PRs based on which components need updates
+- **Detailed Statistics**: Track and report component-level update statistics
+
+### �📄 PR File Diffs Support
+- **Complete File Diffs**: Added support for downloading and storing PR file diffs
+- **Diff Metadata**: Includes additions, deletions, and changes per file
+- **Patch Storage**: Stores the complete patch (diff content) with configurable size limits
+- **Efficient Batch Processing**: Retrieves file diffs in batches for better performance
+- **Idempotent Integration**: Fully compatible with existing idempotency logic
+
 ## ✅ Completed Enhancements (May 26, 2025)
 
 ### 🏗️ Architecture Improvements

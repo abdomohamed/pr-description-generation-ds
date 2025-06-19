@@ -523,6 +523,104 @@ class EnhancedGitHubAPIClient:
         
         return comments
     
+    async def get_pull_request_files_async(self, session: aiohttp.ClientSession,
+                                      repo_full_name: str, pr_number: int,
+                                      max_files: int = 100, page: int = 1) -> List[Dict]:
+        """Get files changed in a pull request (async)"""
+        
+        self.logger.debug(f"Fetching files for PR #{pr_number} in {repo_full_name}")
+        
+        # Check cache first
+        cache_key = f"pr_files_{repo_full_name}_{pr_number}"
+        cached_result = self.cache.get(cache_key)
+        if cached_result is not None:
+            self.performance_stats["cache_hits"] += 1
+            return cached_result
+        
+        self.performance_stats["cache_misses"] += 1
+        
+        url = f"{self.base_url}/repos/{repo_full_name}/pulls/{pr_number}/files"
+        params = {
+            "per_page": min(100, max_files),  # GitHub API max is 100 per page
+            "page": page
+        }
+        
+        try:
+            async with self.throttler:
+                self.performance_stats["api_calls"] += 1
+                
+                if self.enable_request_logging:
+                    self.logger.debug(f"Making API request: GET {url} with params {params}")
+                
+                response = await self._make_async_request(session, url, params)
+                files_data = await response.json()
+                
+                # Process the file data
+                processed_files = []
+                for file_data in files_data:
+                    processed_file = {
+                        "filename": file_data.get("filename"),
+                        "status": file_data.get("status"),
+                        "additions": file_data.get("additions", 0),
+                        "deletions": file_data.get("deletions", 0),
+                        "changes": file_data.get("changes", 0),
+                        "patch": file_data.get("patch", "")
+                    }
+                    processed_files.append(processed_file)
+                
+                # Cache the result
+                self.cache.set(cache_key, processed_files)
+                
+                return processed_files
+                
+        except Exception as e:
+            self.logger.warning(f"Failed to fetch files for PR #{pr_number} in {repo_full_name}: {e}")
+            return []
+            
+    async def get_pull_request_file_content_async(self, session: aiohttp.ClientSession,
+                                            repo_full_name: str, file_path: str, ref: str) -> str:
+        """Get the content of a file at a specific reference (commit/branch)"""
+        
+        self.logger.debug(f"Fetching file content for {file_path} at {ref} in {repo_full_name}")
+        
+        # Check cache first
+        cache_key = f"file_content_{repo_full_name}_{file_path}_{ref}"
+        cached_result = self.cache.get(cache_key)
+        if cached_result is not None:
+            self.performance_stats["cache_hits"] += 1
+            return cached_result
+        
+        self.performance_stats["cache_misses"] += 1
+        
+        url = f"{self.base_url}/repos/{repo_full_name}/contents/{file_path}"
+        params = {"ref": ref}
+        
+        try:
+            async with self.throttler:
+                self.performance_stats["api_calls"] += 1
+                
+                if self.enable_request_logging:
+                    self.logger.debug(f"Making API request: GET {url} with params {params}")
+                
+                response = await self._make_async_request(session, url, params)
+                content_data = await response.json()
+                
+                if "content" in content_data and content_data.get("encoding") == "base64":
+                    import base64
+                    content = base64.b64decode(content_data["content"]).decode("utf-8")
+                    
+                    # Cache the result
+                    self.cache.set(cache_key, content)
+                    
+                    return content
+                else:
+                    self.logger.warning(f"Unexpected response format for file content: {content_data}")
+                    return ""
+                
+        except Exception as e:
+            self.logger.warning(f"Failed to fetch content for {file_path} at {ref} in {repo_full_name}: {e}")
+            return ""
+    
     def determine_change_type_enhanced(self, title: str, body: str, labels: List[str],
                                      commits: List[Commit] = None,
                                      confidence_threshold: float = 0.6, 

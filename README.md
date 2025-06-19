@@ -5,14 +5,14 @@ This script extracts pull request data from GitHub repositories, specifically de
 ## Features
 
 - ✅ Configurable selection of top N popular repositories
-- ✅ Comprehensive PR data extraction including commits and comments
+- ✅ Comprehensive PR data extraction including commits, comments, and file diffs
 - ✅ Automatic change type detection (fix/feature/doc)
 - ✅ Rate limiting and error handling
 - ✅ Multiple output formats (JSON, CSV)
 - ✅ Filtering by programming languages
 - ✅ Customizable extraction parameters
 - ✅ Batch processing with incremental saving
-- ✅ Idempotent extraction (skips previously processed PRs)
+- ✅ Component-level idempotency (tracks commits, comments, and file diffs separately)
 
 ## Setup
 
@@ -56,8 +56,11 @@ This script extracts pull request data from GitHub repositories, specifically de
    # Data Extraction
    INCLUDE_PR_COMMENTS = True    # Include PR comments
    INCLUDE_COMMITS = True        # Include commit data
+   INCLUDE_PR_FILE_DIFFS = True  # Include file diffs
    MAX_COMMENTS_PER_PR = 20      # Max comments per PR
    MAX_COMMITS_PER_PR = 10       # Max commits per PR
+   MAX_FILES_PER_PR = 50         # Max files per PR
+   MAX_PATCH_SIZE = 10000        # Max patch size in characters
    
    # Output Configuration
    OUTPUT_FORMAT = "json"        # json or csv
@@ -82,6 +85,7 @@ The script will:
    - PR comments
    - Repository languages
    - Tags from labels
+   - File diffs
 4. **Save results** in the specified format
 
 ## Output Format
@@ -110,6 +114,12 @@ The script generates data in the following structure:
       "date": "2023-10-01T12:00:00Z"
     }
   ],
+  "file_diffs": [
+    {
+      "file_path": "src/editor.js",
+      "diff": "@@ -10,6 +10,7 @@\n function updateEditor() {\n   // code to update editor\n+  console.log('Editor updated');\n }\n"
+    }
+  ],
   "tags": ["bug", "editor"]
 }
 ```
@@ -134,28 +144,32 @@ The script generates data in the following structure:
 ### Data Extraction
 - `INCLUDE_PR_COMMENTS`: Whether to include PR comments
 - `INCLUDE_COMMITS`: Whether to include commit information
+- `INCLUDE_PR_FILE_DIFFS`: Whether to include file diffs
 - `MAX_COMMENTS_PER_PR`: Maximum comments to extract per PR
 - `MAX_COMMITS_PER_PR`: Maximum commits to extract per PR
 - `BATCH_SIZE`: Number of PRs to process in each batch (also used for incremental saving)
 - `ENABLE_IDEMPOTENT_EXTRACTION`: Skip PRs that have already been processed in previous runs
+- `COMPONENT_LEVEL_IDEMPOTENCY`: Track which components (commits, comments, files) have been processed
 
-### Idempotent Extraction
+### Component-Level Idempotent Extraction
 
-The script supports idempotent operation, meaning it can be safely restarted without re-processing PRs that have already been extracted. This is useful for:
+The script supports component-level idempotent operation, meaning it tracks which specific components (commits, comments, file diffs) have been downloaded for each PR. This provides several advantages:
 
-- Resuming long extraction jobs that were interrupted
-- Incrementally adding more data to an existing dataset
-- Updating an existing dataset with only new PRs
+- Efficient updates when adding new data types (like file diffs)
+- Resuming interrupted extractions without re-downloading everything
+- Memory efficiency through intelligent caching of PR data
+- Detailed tracking statistics about component updates
 
-To enable idempotent extraction, set `ENABLE_IDEMPOTENT_EXTRACTION = True` in `config.py`. When enabled, the script will:
+To enable component-level idempotency, set both `ENABLE_IDEMPOTENT_EXTRACTION = True` and `COMPONENT_LEVEL_IDEMPOTENCY = True` in `config.py`. When enabled, the script will:
 
 1. Scan the output directory for existing PR data files
-2. Build a cache of already processed PR IDs
-3. Skip those PRs in subsequent runs
+2. Build a cache of PR components already processed
+3. Only download missing components for each PR
+4. Track statistics about which components were added or updated
 
-You can test the idempotent extraction feature with:
+You can test the component-level idempotent extraction feature with:
 ```bash
-python test_idempotent.py
+python test_idempotent.py --component-level
 ```
 
 ### Rate Limiting
