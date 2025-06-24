@@ -237,3 +237,87 @@ python extract_pr_data.py
 - Increase `DELAY_BETWEEN_REQUESTS` if experiencing rate limits
 - Enable `ENABLE_IDEMPOTENT_EXTRACTION` to skip already processed PRs when resuming interrupted extractions
 - Use an appropriate `BATCH_SIZE` to balance memory usage and saving frequency
+
+## Efficient Dataset Processing
+
+### Using ijson for Memory-Efficient JSON Processing
+
+The output files can be quite large, especially with comprehensive PR data including comments, commits, and file diffs. For memory-efficient processing of these large JSON files, you can use the `ijson` library, which provides iterative, streaming JSON parsing.
+
+#### Installation
+
+```bash
+pip install ijson
+# Or use the included requirements.txt which now includes ijson
+pip install -r requirements.txt
+```
+
+#### Basic Usage
+
+```python
+import ijson
+import os
+
+def process_pr_data_efficiently(filename):
+    """Process a large PR data file without loading everything into memory."""
+    with open(file_path, 'r', encoding='utf-8') as f:
+        # Iterate through PR records one by one
+        for record in ijson.items(f, 'data.item'):
+        # Process each PR record individually
+        process_single_pr(record)
+
+def process_single_pr(pr_data):
+    """Process a single PR record."""
+    print(f"Processing PR: {pr_data['id']} - {pr_data['title']}")
+    # Your processing logic here
+
+# Process all JSON files in the output directory
+output_dir = './output'
+for filename in os.listdir(output_dir):
+    if filename.endswith('.json'):
+        filepath = os.path.join(output_dir, filename)
+        print(f"Processing file: {filepath}")
+        process_pr_data_efficiently(filepath)
+```
+
+### Memory Profiling
+
+When processing very large datasets, it can be helpful to monitor memory usage:
+
+```python
+import ijson
+import os
+import psutil
+import gc
+
+def process_with_memory_tracking(filepath):
+    """Process a JSON file with memory usage tracking."""
+    process = psutil.Process(os.getpid())
+    initial_memory = process.memory_info().rss / 1024 / 1024  # MB
+    
+    print(f"Initial memory usage: {initial_memory:.2f} MB")
+    
+    pr_count = 0
+    with open(filepath, 'rb') as f:
+        for record in ijson.items(f, 'item'):
+            pr_count += 1
+            if pr_count % 100 == 0:
+                current_memory = process.memory_info().rss / 1024 / 1024
+                print(f"Processed {pr_count} PRs. Memory usage: {current_memory:.2f} MB")
+                # Force garbage collection
+                gc.collect()
+    
+    final_memory = process.memory_info().rss / 1024 / 1024
+    print(f"Completed processing {pr_count} PRs")
+    print(f"Final memory usage: {final_memory:.2f} MB")
+    print(f"Memory difference: {final_memory - initial_memory:.2f} MB")
+
+# Example usage
+filepath = './output/enhanced_pr_data_vscode_merged_20250623_195229.json'
+process_with_memory_tracking(filepath)
+```
+
+For memory profiling, you'll need to install the `psutil` package:
+```bash
+pip install psutil
+```
